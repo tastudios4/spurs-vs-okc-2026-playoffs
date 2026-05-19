@@ -8,17 +8,17 @@
 ## The question
 
 The San Antonio Spurs went **4-1** against the Oklahoma City Thunder in five
-regular season meetings during the 2025-26 season — an unusual result, given
+regular season meetings during the 2025-26 season.
 OKC is the defending West-leading powerhouse built around back-to-back MVP
 Shai Gilgeous-Alexander, and the Spurs are the league's youngest contender
 with DPOY candidate Victor Wembanyama anchoring the defense.
 
-Tonight (May 18, 2026), the two teams open the Western Conference Finals.
+May 18, 2026 the two teams open the Western Conference Finals.
 
 This repo asks a single question:
 
 > **Based on those five regular-season games, what should we actually expect
-> in this series — and which of the regular-season patterns are predictive
+> in this series and which of the regular-season patterns are predictive
 > versus noise?**
 
 ## Headline finding
