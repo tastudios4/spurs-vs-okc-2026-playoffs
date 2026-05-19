@@ -87,8 +87,13 @@ def player_delta_table(
 
 
 def team_h2h_summary(team_clean: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate four factors + ratings across H2H games, by team and slice."""
-    slices = [("All H2H", team_clean)]
+    """Aggregate four factors + ratings across H2H games, by team and slice.
+
+    Regular Season and Playoffs are kept separate (rather than mashed
+    together) because the whole project's question is about how the two
+    samples diverge.
+    """
+    slices = []
     for label, st in [("Regular Season H2H", "Regular Season"), ("Playoff H2H", "Playoffs")]:
         df = team_clean[team_clean["SEASON_TYPE"] == st]
         if not df.empty:
