@@ -238,50 +238,49 @@ METRIC_DISPLAY = {
 }
 
 
+def _delta_cell(delta: float, kind: str) -> str:
+    """Format a single delta value with the right unit and sign."""
+    if pd.isna(delta):
+        return "—"
+    if kind == "pct":
+        return f"{delta*100:+.1f} pp"
+    if kind == "rate":
+        return f"{delta:+.3f}"
+    return f"{delta:+.1f}"
+
+
 def _format_player_delta(deltas: pd.DataFrame) -> str:
-    """Build the player x metric delta table grouped by player."""
+    """Wide format: one row per player, one column per metric (delta values).
+
+    Absolute Season / H2H values are intentionally not shown here — they're
+    available in data/analysis_summary.csv when you need them. This view is
+    optimized for scanning the *surprise* across all metrics at a glance.
+    """
+    if deltas.empty:
+        return "(no delta data)"
+
+    metric_order = [m for m in PLAYER_METRICS if m in deltas["METRIC"].values]
+
     rows = []
-    for _, r in deltas.iterrows():
-        kind, label = METRIC_DISPLAY.get(r["METRIC"], ("float1", r["METRIC"]))
-        delta_kind = "sint1" if kind in ("float1", "sint1") else ("pct" if kind == "pct" else "rate")
-        # For percentages, format the delta in absolute percentage points.
-        if kind == "pct":
-            delta_str = f"{(r['DELTA'])*100:+.1f} pp"
-        elif kind == "rate":
-            delta_str = f"{r['DELTA']:+.3f}"
-        else:
-            delta_str = f"{r['DELTA']:+.1f}"
-        rows.append({
-            "PLAYER":    r["PLAYER"],
-            "TEAM":      r["TEAM"],
-            "METRIC":    label,
-            "SEASON":    _fmt(r["SEASON_AVG"], kind),
-            "H2H":       _fmt(r["H2H_AVG"], kind),
-            "Δ":         delta_str,
-            "SEASON N":  r["SEASON_N"],
-            "H2H N":     r["H2H_N"],
-        })
+    for player, group in deltas.groupby("PLAYER", sort=False):
+        team = group["TEAM"].iloc[0]
+        row = {"PLAYER": player, "TEAM": team}
+        for metric in metric_order:
+            sub = group[group["METRIC"] == metric]
+            if sub.empty:
+                row[METRIC_DISPLAY[metric][1]] = "—"
+                continue
+            kind, label = METRIC_DISPLAY.get(metric, ("float1", metric))
+            row[label] = _delta_cell(sub.iloc[0]["DELTA"], kind)
+        row["H2H N"] = int(group["H2H_N"].iloc[0])
+        rows.append(row)
     out = pd.DataFrame(rows)
 
-    # Tabulate + game-style grouping: print rows for one player, separator,
-    # then next player.
-    table = tabulate(
+    return tabulate(
         out, headers="keys", tablefmt=TFMT, showindex=False,
         disable_numparse=True,
-        colalign=("left", "center", "left", "right", "right", "right", "right", "right"),
+        colalign=("left", "center") + ("right",) * (len(out.columns) - 2),
     )
-    lines = table.split("\n")
-    top, header, sep = lines[0], lines[1], lines[2]
-    *data_lines, bottom = lines[3:]
-    grouped = [top, header, sep]
-    prev = None
-    for line, player in zip(data_lines, out["PLAYER"]):
-        if prev is not None and player != prev:
-            grouped.append(sep)
-        grouped.append(line)
-        prev = player
-    grouped.append(bottom)
-    return "\n".join(grouped)
 
 
 def _format_predicted_vs_observed(df: pd.DataFrame) -> str:
