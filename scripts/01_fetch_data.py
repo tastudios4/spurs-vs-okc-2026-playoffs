@@ -119,11 +119,26 @@ def fetch_regular_season() -> pd.DataFrame:
 
 
 def fetch_playoffs() -> pd.DataFrame:
+    """Fetch playoff H2H box scores. Drops in-progress games.
+
+    nba_api's LeagueGameFinder returns rows for live games too, with
+    partial stats and no WL decided. Including those would pollute the
+    analysis (the predicted-vs-observed table would compare reg-season
+    averages to a 22-22 first-quarter snapshot). Filter to rows where
+    WL is 'W' or 'L' — the only games the league considers final.
+    """
     print(f"Fetching {SEASON} playoff Spurs vs Thunder team box scores...")
     df = head_to_head_team_box(SEASON, "Playoffs")
+
+    completed_mask = df["WL"].isin(["W", "L"]) if not df.empty else pd.Series(dtype=bool)
+    in_progress = df[~completed_mask] if not df.empty else df
+    if not in_progress.empty:
+        n_partial = in_progress["GAME_ID"].nunique()
+        print(f"  -> skipping {n_partial} in-progress game(s) (no WL decided yet)")
+    df = df[completed_mask] if not df.empty else df
+
     if df.empty:
-        print("  -> no playoff H2H games found yet (expected pre-Game 1).")
-        # Write an empty file with a clear shape so downstream scripts can no-op.
+        print("  -> no completed playoff H2H games yet.")
         df.to_csv(PLAYOFF_CSV, index=False)
         return df
     df.to_csv(PLAYOFF_CSV, index=False)
