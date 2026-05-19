@@ -11,6 +11,8 @@ Outputs:
 
 from __future__ import annotations
 
+import math
+from math import comb
 from pathlib import Path
 
 import pandas as pd
@@ -172,6 +174,82 @@ def predicted_vs_observed(team_clean: pd.DataFrame, player_clean: pd.DataFrame) 
             })
 
     return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Simple series prediction
+# ---------------------------------------------------------------------------
+
+# Empirical NBA standard deviation of single-game point margin around the
+# expected value. A defensible default in the 11-14 range; 13 is what the
+# 2024-25 regular-season residuals worked out to. Lower SD = more confident
+# in the H2H sample; higher SD = more humble.
+DEFAULT_MARGIN_SD = 13.0
+
+
+def _norm_cdf(z: float) -> float:
+    """Standard-normal CDF using math.erf — avoids a scipy dependency."""
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
+def _series_win_prob(p_game: float, wins: int = 0, losses: int = 0, length: int = 7) -> float:
+    """P(team wins a best-of-`length` series given current state and per-game prob).
+
+    Uses the negative-binomial formulation: sum over series-ending paths of
+    the probability that the team gets its `need`-th win on the n-th remaining
+    game.
+    """
+    target = (length + 1) // 2  # 4 for best-of-7
+    need = target - wins
+    opp_need = target - losses
+    if need <= 0:
+        return 1.0
+    if opp_need <= 0:
+        return 0.0
+    total = 0.0
+    for n in range(need, need + opp_need):
+        total += comb(n - 1, need - 1) * (p_game ** need) * ((1 - p_game) ** (n - need))
+    return total
+
+
+def predict_series(team_clean: pd.DataFrame, margin_sd: float = DEFAULT_MARGIN_SD) -> dict[str, str]:
+    """Predict P(SAS wins next game) and P(SAS wins series) from H2H sample.
+
+    Margin estimate uses ALL H2H games available (regular + playoff so far);
+    series probability conditions on the current playoff state.
+
+    Method (called out so the README can cite it honestly):
+      1. avg_margin = mean of SAS's per-game point margin in H2H games
+      2. p_game = normal CDF of (avg_margin / margin_sd) — i.e., P(margin > 0)
+      3. p_series = P(SAS wins 4 before OKC, given current state) via the
+         negative-binomial formula
+    """
+    sas = team_clean[team_clean["TEAM_ABBREVIATION"] == "SAS"]
+    sas_reg = sas[sas["SEASON_TYPE"] == "Regular Season"]
+    sas_po  = sas[sas["SEASON_TYPE"] == "Playoffs"]
+
+    sas_po_wins   = int((sas_po["WL"] == "W").sum())
+    sas_po_losses = int((sas_po["WL"] == "L").sum())
+
+    if sas_po.empty:
+        sample = sas_reg
+        sample_desc = f"{len(sas_reg)} regular-season H2H games"
+    else:
+        sample = sas
+        sample_desc = f"{len(sas_reg)} regular-season + {len(sas_po)} playoff H2H games"
+
+    avg_margin = sample["MARGIN"].mean()
+    p_game     = _norm_cdf(avg_margin / margin_sd)
+    p_series   = _series_win_prob(p_game, sas_po_wins, sas_po_losses)
+
+    return {
+        "Sample":                    sample_desc,
+        "Avg SAS margin (pts/game)": f"{avg_margin:+.1f}",
+        "Margin SD assumed":         f"{margin_sd:.1f}",
+        "P(SAS wins next game)":     f"{p_game:.1%}",
+        "Current series state":      f"SAS {sas_po_wins}-{sas_po_losses} OKC",
+        "P(SAS wins series)":        f"{p_series:.1%}",
+    }
 
 
 def wemby_status_split(team_clean: pd.DataFrame) -> pd.DataFrame:
@@ -441,6 +519,7 @@ def main() -> None:
     team_summary  = team_h2h_summary(team)
     pred_vs_obs   = predicted_vs_observed(team, player)
     split         = wemby_status_split(team)
+    prediction    = predict_series(team)
     headline      = headline_numbers(reg_deltas, team, po_deltas, pred_vs_obs)
 
     reg_deltas.to_csv(SUMMARY_OUT, index=False)
@@ -453,6 +532,15 @@ def main() -> None:
     _print_titled("Team H2H four factors + ratings (aggregated):", _format_team_summary(team_summary))
     _print_titled("Reg-season H2H expectation vs Playoff H2H actual:", _format_predicted_vs_observed(pred_vs_obs))
     _print_titled("SAS results by Wemby status (regular season H2H):", _format_wemby_split(split))
+    _print_titled(
+        "Series prediction (live; re-runs with each new H2H game):",
+        tabulate(
+            [(k, v) for k, v in prediction.items()],
+            headers=["Metric", "Value"],
+            tablefmt=TFMT, disable_numparse=True,
+            colalign=("left", "right"),
+        ),
+    )
 
 
 if __name__ == "__main__":
