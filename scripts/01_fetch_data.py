@@ -154,12 +154,12 @@ _ADV_COLS_TO_KEEP = [
 ]
 
 
-def _player_season_log(player_id: int, measure_type: str) -> pd.DataFrame:
-    """One season's game log for one player, for a given measure type."""
+def _player_season_log(player_id: int, measure_type: str, season_type: str = "Regular Season") -> pd.DataFrame:
+    """One season's game log for one player, for a given measure type + season type."""
     log = playergamelogs.PlayerGameLogs(
         player_id_nullable=player_id,
         season_nullable=SEASON,
-        season_type_nullable="Regular Season",
+        season_type_nullable=season_type,
         measure_type_player_game_logs_nullable=measure_type,
     ).get_data_frames()[0]
     time.sleep(SLEEP_BETWEEN_CALLS)
@@ -167,11 +167,22 @@ def _player_season_log(player_id: int, measure_type: str) -> pd.DataFrame:
 
 
 def _combined_player_log(player_id: int) -> pd.DataFrame:
-    """Base + Advanced merged on GAME_ID."""
-    base = _player_season_log(player_id, "Base")
-    adv = _player_season_log(player_id, "Advanced")
-    adv_cols = [c for c in _ADV_COLS_TO_KEEP if c in adv.columns]
-    return base.merge(adv[adv_cols], on="GAME_ID", how="left")
+    """Regular Season + Playoffs game logs, Base + Advanced merged on GAME_ID.
+
+    A SEASON_TYPE column distinguishes the two; downstream code can split
+    on it (e.g., compute season averages from Regular Season only).
+    """
+    parts: list[pd.DataFrame] = []
+    for season_type in ("Regular Season", "Playoffs"):
+        base = _player_season_log(player_id, "Base", season_type)
+        if base.empty:
+            continue
+        adv = _player_season_log(player_id, "Advanced", season_type)
+        adv_cols = [c for c in _ADV_COLS_TO_KEEP if c in adv.columns]
+        merged = base.merge(adv[adv_cols], on="GAME_ID", how="left")
+        merged["SEASON_TYPE"] = season_type
+        parts.append(merged)
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
 def fetch_player_data(h2h_game_ids: set[str]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -196,9 +207,11 @@ def fetch_player_data(h2h_game_ids: set[str]) -> tuple[pd.DataFrame, pd.DataFram
     h2h_box = full_log[full_log["GAME_ID"].astype(str).isin(h2h_game_ids)].copy()
     h2h_box = h2h_box.sort_values(["GAME_DATE", "PLAYER_LABEL"]).reset_index(drop=True)
 
-    # Season averages: simple per-game mean over numeric columns. This is
-    # the "box score average" convention; for shooting %s and rate stats a
-    # minutes-weighted recompute is more correct — done in 02_clean.py.
+    # Season averages: simple per-game mean over numeric columns. Computed
+    # from REGULAR SEASON ONLY so they're a stable baseline to compare H2H
+    # (and eventually playoff) games against. For shooting %s and rate
+    # stats, a minutes-weighted recompute is more correct — done in
+    # 02_clean.py / 03_analyze.py.
     stat_cols = [
         "MIN", "PTS", "REB", "AST", "STL", "BLK", "TOV", "PF",
         "FGM", "FGA", "FG_PCT", "FG3M", "FG3A", "FG3_PCT", "FTM", "FTA", "FT_PCT",
@@ -208,13 +221,14 @@ def fetch_player_data(h2h_game_ids: set[str]) -> tuple[pd.DataFrame, pd.DataFram
     ]
     stat_cols = [c for c in stat_cols if c in full_log.columns]
 
+    reg_only = full_log[full_log["SEASON_TYPE"] == "Regular Season"]
     season_avg = (
-        full_log.groupby(["PLAYER_LABEL", "TEAM_LABEL"])[stat_cols]
+        reg_only.groupby(["PLAYER_LABEL", "TEAM_LABEL"])[stat_cols]
         .mean()
         .reset_index()
     )
     games_played = (
-        full_log.groupby(["PLAYER_LABEL", "TEAM_LABEL"])
+        reg_only.groupby(["PLAYER_LABEL", "TEAM_LABEL"])
         .size()
         .reset_index(name="GAMES_PLAYED")
     )
@@ -257,9 +271,11 @@ if __name__ == "__main__":
     _verify_team_ids()
     _verify_player_ids()
     reg = fetch_regular_season()
-    fetch_playoffs()
+    po = fetch_playoffs()
 
     h2h_game_ids = set(reg["GAME_ID"].astype(str))
+    if not po.empty:
+        h2h_game_ids |= set(po["GAME_ID"].astype(str))
     _, h2h_box, season_avg = fetch_player_data(h2h_game_ids)
 
     # ----- Friendly summaries to stdout. CSVs keep full precision. -----

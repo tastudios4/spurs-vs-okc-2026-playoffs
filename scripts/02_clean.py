@@ -26,8 +26,9 @@ from tabulate import tabulate
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
-RAW_TEAM = DATA_DIR / "regular_season_h2h.csv"
-RAW_PLAYER = DATA_DIR / "player_h2h_box.csv"
+RAW_TEAM_REG = DATA_DIR / "regular_season_h2h.csv"
+RAW_TEAM_PO  = DATA_DIR / "playoff_h2h.csv"
+RAW_PLAYER   = DATA_DIR / "player_h2h_box.csv"
 
 CLEAN_TEAM = DATA_DIR / "team_h2h_clean.csv"
 CLEAN_PLAYER = DATA_DIR / "player_h2h_clean.csv"
@@ -67,12 +68,18 @@ def add_team_context(team: pd.DataFrame) -> pd.DataFrame:
     team["MARGIN"] = team["PTS"] - team["OPP_PTS"]
     team["is_blowout"] = team["MARGIN"].abs() >= 10
 
+    # Merge regular-season context flags; playoff games (no GAME_CONTEXT
+    # entry) get defaulted afterward.
     flags = (
         pd.DataFrame.from_dict(GAME_CONTEXT, orient="index")
         .reset_index()
         .rename(columns={"index": "GAME_DATE"})
     )
-    team = team.merge(flags, on="GAME_DATE")
+    team = team.merge(flags, on="GAME_DATE", how="left")
+    team["wemby_status"]    = team["wemby_status"].fillna("normal")
+    team["sga_played"]      = team["sga_played"].fillna(True).astype(bool)
+    team["is_cup_knockout"] = team["is_cup_knockout"].fillna(False).astype(bool)
+    team["is_neutral_site"] = team["is_neutral_site"].fillna(False).astype(bool)
     return team
 
 
@@ -125,7 +132,7 @@ def add_player_context(player: pd.DataFrame, team_clean: pd.DataFrame) -> pd.Dat
     player["GAME_DATE"] = pd.to_datetime(player["GAME_DATE"]).dt.strftime("%Y-%m-%d")
 
     flags = team_clean.drop_duplicates(subset=["GAME_ID"])[[
-        "GAME_ID", "wemby_status", "sga_played",
+        "GAME_ID", "SEASON_TYPE", "wemby_status", "sga_played",
         "is_cup_knockout", "is_neutral_site", "is_blowout",
     ]]
     return player.merge(flags, on="GAME_ID")
@@ -188,10 +195,10 @@ def _format_game_context(team: pd.DataFrame) -> str:
     """One row per game showing the context flags (SAS perspective)."""
     ctx = (
         team[team["TEAM_ABBREVIATION"] == "SAS"][[
-            "GAME_DATE", "MATCHUP", "MARGIN", "is_blowout",
+            "GAME_DATE", "SEASON_TYPE", "MATCHUP", "MARGIN", "is_blowout",
             "wemby_status", "sga_played", "is_cup_knockout", "is_neutral_site",
         ]]
-        .sort_values("GAME_DATE")
+        .sort_values(["SEASON_TYPE", "GAME_DATE"])
         .reset_index(drop=True)
     )
     disp = ctx.copy()
@@ -202,7 +209,7 @@ def _format_game_context(team: pd.DataFrame) -> str:
     return tabulate(
         disp, headers="keys", tablefmt=TFMT, showindex=False,
         disable_numparse=True,
-        colalign=("left", "left", "right",
+        colalign=("left", "left", "left", "right",
                   "center", "center", "center", "center", "center"),
     )
 
@@ -211,9 +218,22 @@ def _format_game_context(team: pd.DataFrame) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
+def _read_and_tag(path: Path, season_type: str) -> pd.DataFrame:
+    """Read a team H2H CSV and tag rows with SEASON_TYPE. Returns empty
+    DataFrame (with no columns) if the file is empty."""
+    df = pd.read_csv(path)
+    if df.empty:
+        return df
+    df["SEASON_TYPE"] = season_type
+    return df
+
+
 def main() -> None:
     print("Reading raw data...")
-    team_raw = pd.read_csv(RAW_TEAM)
+    reg = _read_and_tag(RAW_TEAM_REG, "Regular Season")
+    po  = _read_and_tag(RAW_TEAM_PO, "Playoffs")
+    team_raw = pd.concat([reg, po], ignore_index=True) if not po.empty else reg
+    print(f"  -> {len(reg)} regular-season rows + {len(po)} playoff rows")
     player_raw = pd.read_csv(RAW_PLAYER)
 
     print("Adding team context flags + margin + blowout flag...")
