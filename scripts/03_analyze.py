@@ -43,14 +43,20 @@ TEAM_METRICS = [
 # Analysis steps
 # ---------------------------------------------------------------------------
 
-def player_delta_table(player_h2h: pd.DataFrame, season_avg: pd.DataFrame) -> pd.DataFrame:
+def player_delta_table(
+    player_h2h: pd.DataFrame,
+    season_avg: pd.DataFrame,
+    season_type: str = "Regular Season",
+) -> pd.DataFrame:
     """Long-form table: one row per (player, metric) with season / H2H / delta.
 
-    H2H is restricted to Regular Season games so the comparison is
-    apples-to-apples with the season-average baseline. Once playoff
-    games exist, a separate slice will surface them.
+    `season_type` filters the H2H rows to that slice ("Regular Season" or
+    "Playoffs"). The season-average baseline is always the player's
+    full-regular-season mean (set in 01_fetch_data.py).
     """
-    h2h = player_h2h[player_h2h["SEASON_TYPE"] == "Regular Season"].copy()
+    h2h = player_h2h[player_h2h["SEASON_TYPE"] == season_type].copy()
+    if h2h.empty:
+        return pd.DataFrame()
     metric_cols = [c for c in PLAYER_METRICS if c in h2h.columns and c in season_avg.columns]
 
     h2h_avg = h2h.groupby("PLAYER_LABEL")[metric_cols].mean().reset_index()
@@ -102,6 +108,64 @@ def team_h2h_summary(team_clean: pd.DataFrame) -> pd.DataFrame:
                 "RECORD": f"{(sub['WL']=='W').sum()}-{(sub['WL']=='L').sum()}",
             })
             rows.append(agg)
+    return pd.DataFrame(rows)
+
+
+def predicted_vs_observed(team_clean: pd.DataFrame, player_clean: pd.DataFrame) -> pd.DataFrame:
+    """Side-by-side: regular-season H2H expectation vs playoff H2H actual.
+
+    Returns rows for both teams' four factors / ratings AND for each
+    tracked player's key metrics. Empty if no playoff H2H games exist.
+
+    The "expectation" framing: what the regular-season sample predicted.
+    The "actual" framing: what's been observed in the WCF so far.
+    DELTA > 0 means the playoff actual is *higher* than the regular-season
+    expectation; sign is the same on both sides.
+    """
+    po_team = team_clean[team_clean["SEASON_TYPE"] == "Playoffs"]
+    if po_team.empty:
+        return pd.DataFrame()
+
+    rows: list[dict] = []
+
+    # Team-level four factors / ratings
+    for team_abbr in ("SAS", "OKC"):
+        reg = team_clean[(team_clean["TEAM_ABBREVIATION"] == team_abbr) & (team_clean["SEASON_TYPE"] == "Regular Season")]
+        po  = team_clean[(team_clean["TEAM_ABBREVIATION"] == team_abbr) & (team_clean["SEASON_TYPE"] == "Playoffs")]
+        if reg.empty or po.empty:
+            continue
+        for metric in TEAM_METRICS:
+            rows.append({
+                "SUBJECT": team_abbr,
+                "METRIC":  metric,
+                "EXPECTED": reg[metric].mean(),
+                "ACTUAL":   po[metric].mean(),
+                "DELTA":    po[metric].mean() - reg[metric].mean(),
+                "EXP_N":    int(len(reg)),
+                "ACT_N":    int(len(po)),
+            })
+
+    # Player-level (only metrics present on both sides)
+    reg_player = player_clean[player_clean["SEASON_TYPE"] == "Regular Season"]
+    po_player  = player_clean[player_clean["SEASON_TYPE"] == "Playoffs"]
+    for name in po_player["PLAYER_LABEL"].unique():
+        reg_p = reg_player[reg_player["PLAYER_LABEL"] == name]
+        po_p  = po_player[po_player["PLAYER_LABEL"] == name]
+        if reg_p.empty or po_p.empty:
+            continue
+        for metric in PLAYER_METRICS:
+            if metric not in po_p.columns or metric not in reg_p.columns:
+                continue
+            rows.append({
+                "SUBJECT": name,
+                "METRIC":  metric,
+                "EXPECTED": reg_p[metric].mean(),
+                "ACTUAL":   po_p[metric].mean(),
+                "DELTA":    po_p[metric].mean() - reg_p[metric].mean(),
+                "EXP_N":    int(len(reg_p)),
+                "ACT_N":    int(len(po_p)),
+            })
+
     return pd.DataFrame(rows)
 
 
@@ -220,6 +284,49 @@ def _format_player_delta(deltas: pd.DataFrame) -> str:
     return "\n".join(grouped)
 
 
+def _format_predicted_vs_observed(df: pd.DataFrame) -> str:
+    """Reg-season H2H expectation vs Playoff H2H actual, grouped by subject."""
+    if df.empty:
+        return "(no playoff H2H games yet — this table populates after Game 1)"
+
+    rows = []
+    for _, r in df.iterrows():
+        kind, label = METRIC_DISPLAY.get(r["METRIC"], ("float1", r["METRIC"]))
+        if kind == "pct":
+            delta_str = f"{(r['DELTA'])*100:+.1f} pp"
+        elif kind == "rate":
+            delta_str = f"{r['DELTA']:+.3f}"
+        else:
+            delta_str = f"{r['DELTA']:+.1f}"
+        rows.append({
+            "SUBJECT":  r["SUBJECT"],
+            "METRIC":   label,
+            "EXPECTED": _fmt(r["EXPECTED"], kind),
+            "ACTUAL":   _fmt(r["ACTUAL"], kind),
+            "Δ":        delta_str,
+            "EXP N":    r["EXP_N"],
+            "ACT N":    r["ACT_N"],
+        })
+    out = pd.DataFrame(rows)
+    table = tabulate(
+        out, headers="keys", tablefmt=TFMT, showindex=False,
+        disable_numparse=True,
+        colalign=("left", "left", "right", "right", "right", "right", "right"),
+    )
+    lines = table.split("\n")
+    top, header, sep = lines[0], lines[1], lines[2]
+    *data_lines, bottom = lines[3:]
+    grouped = [top, header, sep]
+    prev = None
+    for line, subj in zip(data_lines, out["SUBJECT"]):
+        if prev is not None and subj != prev:
+            grouped.append(sep)
+        grouped.append(line)
+        prev = subj
+    grouped.append(bottom)
+    return "\n".join(grouped)
+
+
 def _format_team_summary(summary: pd.DataFrame) -> str:
     disp = summary.copy()
     disp["PACE"]       = disp["PACE"].map(lambda v: _fmt(v, "float1"))
@@ -257,27 +364,61 @@ def _format_wemby_split(split: pd.DataFrame) -> str:
 # Headline-ready story numbers
 # ---------------------------------------------------------------------------
 
-def headline_numbers(player_deltas: pd.DataFrame, team_clean: pd.DataFrame) -> dict[str, str]:
-    """Boil it down to the few numbers the README opens with."""
+def headline_numbers(
+    reg_player_deltas: pd.DataFrame,
+    team_clean: pd.DataFrame,
+    po_player_deltas: pd.DataFrame | None = None,
+    pred_vs_obs: pd.DataFrame | None = None,
+) -> dict[str, str]:
+    """Boil it down to the few numbers the README opens with.
+
+    Always emits the regular-season headline (SGA TS% drop, SAS record).
+    When playoff H2H data exists, also emits the playoff actuals + the
+    deltas vs the regular-season H2H expectation.
+    """
     out: dict[str, str] = {}
 
-    sga_ts = player_deltas[(player_deltas.PLAYER == "Shai Gilgeous-Alexander") & (player_deltas.METRIC == "TS_PCT")]
+    sga_ts = reg_player_deltas[(reg_player_deltas.PLAYER == "Shai Gilgeous-Alexander") & (reg_player_deltas.METRIC == "TS_PCT")]
     if not sga_ts.empty:
         r = sga_ts.iloc[0]
-        out["sga_ts_season"] = f"{r['SEASON_AVG']:.1%}"
-        out["sga_ts_h2h"] = f"{r['H2H_AVG']:.1%}"
-        out["sga_ts_delta_pp"] = f"{(r['DELTA'])*100:+.1f}"
-        out["sga_h2h_n"] = str(r['H2H_N'])
+        out["sga_ts_season"]    = f"{r['SEASON_AVG']:.1%}"
+        out["sga_ts_reg_h2h"]   = f"{r['H2H_AVG']:.1%}"
+        out["sga_ts_delta_pp"]  = f"{(r['DELTA'])*100:+.1f}"
+        out["sga_reg_h2h_n"]    = str(r['H2H_N'])
 
     sas_reg = team_clean[(team_clean.TEAM_ABBREVIATION == "SAS") & (team_clean.SEASON_TYPE == "Regular Season")]
-    out["sas_record"] = f"{(sas_reg['WL']=='W').sum()}-{(sas_reg['WL']=='L').sum()}"
-    out["sas_avg_margin"] = f"{sas_reg['MARGIN'].mean():+.1f}"
-    out["sas_net_rating_h2h"] = f"{sas_reg['NET_RATING'].mean():+.1f}"
+    out["sas_reg_record"]      = f"{(sas_reg['WL']=='W').sum()}-{(sas_reg['WL']=='L').sum()}"
+    out["sas_reg_avg_margin"]  = f"{sas_reg['MARGIN'].mean():+.1f}"
+    out["sas_reg_net_rating"]  = f"{sas_reg['NET_RATING'].mean():+.1f}"
 
     restricted = sas_reg[sas_reg["wemby_status"] == "restricted"]
     if not restricted.empty:
         out["sas_record_wemby_restricted"] = f"{(restricted['WL']=='W').sum()}-{(restricted['WL']=='L').sum()}"
         out["wemby_restricted_n"] = str(len(restricted))
+
+    # Playoff side (only when at least one WCF H2H game exists)
+    if po_player_deltas is not None and not po_player_deltas.empty:
+        sga_po = po_player_deltas[(po_player_deltas.PLAYER == "Shai Gilgeous-Alexander") & (po_player_deltas.METRIC == "TS_PCT")]
+        if not sga_po.empty:
+            r = sga_po.iloc[0]
+            out["sga_ts_po_h2h"]               = f"{r['H2H_AVG']:.1%}"
+            out["sga_ts_po_h2h_n"]             = str(r['H2H_N'])
+            out["sga_ts_po_vs_season_pp"]      = f"{(r['DELTA'])*100:+.1f}"
+
+    if pred_vs_obs is not None and not pred_vs_obs.empty:
+        sga_pvo = pred_vs_obs[(pred_vs_obs.SUBJECT == "Shai Gilgeous-Alexander") & (pred_vs_obs.METRIC == "TS_PCT")]
+        if not sga_pvo.empty:
+            r = sga_pvo.iloc[0]
+            out["sga_ts_po_vs_reg_h2h_pp"] = f"{(r['DELTA'])*100:+.1f}"
+        sas_nr = pred_vs_obs[(pred_vs_obs.SUBJECT == "SAS") & (pred_vs_obs.METRIC == "NET_RATING")]
+        if not sas_nr.empty:
+            r = sas_nr.iloc[0]
+            out["sas_netrtg_po_vs_reg_h2h"] = f"{r['DELTA']:+.1f}"
+
+        sas_po_team = team_clean[(team_clean.TEAM_ABBREVIATION == "SAS") & (team_clean.SEASON_TYPE == "Playoffs")]
+        if not sas_po_team.empty:
+            out["sas_po_record"]    = f"{(sas_po_team['WL']=='W').sum()}-{(sas_po_team['WL']=='L').sum()}"
+            out["sas_po_avg_margin"] = f"{sas_po_team['MARGIN'].mean():+.1f}"
 
     return out
 
@@ -291,17 +432,22 @@ def main() -> None:
     player = pd.read_csv(PLAYER_CLEAN)
     season_avg = pd.read_csv(PLAYER_SEASON_AVG)
 
-    deltas = player_delta_table(player, season_avg)
-    team_summary = team_h2h_summary(team)
-    split = wemby_status_split(team)
-    headline = headline_numbers(deltas, team)
+    reg_deltas    = player_delta_table(player, season_avg, season_type="Regular Season")
+    po_deltas     = player_delta_table(player, season_avg, season_type="Playoffs")
+    team_summary  = team_h2h_summary(team)
+    pred_vs_obs   = predicted_vs_observed(team, player)
+    split         = wemby_status_split(team)
+    headline      = headline_numbers(reg_deltas, team, po_deltas, pred_vs_obs)
 
-    deltas.to_csv(SUMMARY_OUT, index=False)
-    print(f"Wrote {len(deltas)} player-metric rows to {SUMMARY_OUT.relative_to(DATA_DIR.parent)}")
+    reg_deltas.to_csv(SUMMARY_OUT, index=False)
+    print(f"Wrote {len(reg_deltas)} player-metric rows to {SUMMARY_OUT.relative_to(DATA_DIR.parent)}")
 
-    _print_titled("Headline numbers:", "\n".join(f"  {k:30s} = {v}" for k, v in headline.items()))
-    _print_titled("Player H2H vs season averages:", _format_player_delta(deltas))
+    _print_titled("Headline numbers:", "\n".join(f"  {k:32s} = {v}" for k, v in headline.items()))
+    _print_titled("Player H2H vs season averages (Regular Season):", _format_player_delta(reg_deltas))
+    if not po_deltas.empty:
+        _print_titled("Player H2H vs season averages (Playoffs):", _format_player_delta(po_deltas))
     _print_titled("Team H2H four factors + ratings (aggregated):", _format_team_summary(team_summary))
+    _print_titled("Reg-season H2H expectation vs Playoff H2H actual:", _format_predicted_vs_observed(pred_vs_obs))
     _print_titled("SAS results by Wemby status (regular season H2H):", _format_wemby_split(split))
 
 
