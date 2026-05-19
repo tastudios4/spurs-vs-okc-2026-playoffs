@@ -212,6 +212,19 @@ def _series_win_prob(p_game: float, wins: int = 0, losses: int = 0, length: int 
     return total
 
 
+def latest_playoff_game(team_clean: pd.DataFrame) -> str:
+    """One-line description of the most recent playoff H2H game (for log
+    'trigger' column). Returns '—' if no playoff games yet."""
+    po = team_clean[team_clean["SEASON_TYPE"] == "Playoffs"]
+    if po.empty:
+        return "—"
+    most_recent_id = po.sort_values("GAME_DATE").iloc[-1]["GAME_ID"]
+    g = po[po["GAME_ID"] == most_recent_id]
+    sas = g[g["TEAM_ABBREVIATION"] == "SAS"].iloc[0]
+    okc = g[g["TEAM_ABBREVIATION"] == "OKC"].iloc[0]
+    return f"{sas['GAME_DATE']} · SAS {int(sas['PTS'])}–OKC {int(okc['PTS'])}"
+
+
 def predict_series(team_clean: pd.DataFrame, margin_sd: float = DEFAULT_MARGIN_SD) -> dict[str, str]:
     """Predict P(SAS wins next game) and P(SAS wins series) from H2H sample.
 
@@ -541,6 +554,22 @@ def main() -> None:
             colalign=("left", "right"),
         ),
     )
+
+    # Markdown row the user can paste straight into the README's series log.
+    sas_po = team[(team["TEAM_ABBREVIATION"] == "SAS") & (team["SEASON_TYPE"] == "Playoffs")]
+    n_po = int(len(sas_po))
+    snapshot_label = "Pre-WCF (no PO data)" if n_po == 0 else f"After Game {n_po}"
+    sample_label = f"{int(len(team[(team.TEAM_ABBREVIATION=='SAS') & (team.SEASON_TYPE=='Regular Season')]))} reg + {n_po} PO"
+    md_row = (
+        f"| {snapshot_label} "
+        f"| {latest_playoff_game(team)} "
+        f"| {sample_label} "
+        f"| {prediction['P(SAS wins next game)']} "
+        f"| {prediction['Current series state']} "
+        f"| {prediction['P(SAS wins series)']} |"
+    )
+    print("\nCopy-paste row for README series log:")
+    print(md_row)
 
 
 if __name__ == "__main__":

@@ -162,12 +162,29 @@ python scripts/03_analyze.py
 single WCF box score in-place; the full re-run path above is what gets
 called after each game during the series.
 
-## Series log
+## Series predictions log
 
-| Game | Date | Result | Notes |
+Each row is a snapshot of the live prediction from `03_analyze.py`,
+captured **after** the corresponding trigger event (a new H2H game).
+The first row is the pre-WCF baseline; every subsequent row is what the
+model thinks heading into the next game, given everything observed so far.
+
+Predictions are deliberately simple: avg per-game H2H margin → normal CDF
+with a 13-pt single-game margin SD → per-game P → negative-binomial
+rollup to series probability conditioned on the current playoff state.
+Method docstring is in `predict_series()` in `scripts/03_analyze.py`.
+
+| Snapshot | Trigger | Sample | P(SAS next game) | Series state | P(SAS series) |
+|---|---|---|---|---|---|
+| Pre-WCF (no PO data) | — | 5 reg + 0 PO | 65.5% | SAS 0-0 OKC | 80.9% |
+
+After each WCF game, re-run `python scripts/03_analyze.py` — the script
+prints a copy-pasteable markdown row to append to this table.
+
+## Per-game result log
+
+| Game | Date | Score | Notable swings vs regular-season expectation |
 |---|---|---|---|
-| 1 | 2026-05-18 | *In progress at time of writing* | — |
+| 1 | 2026-05-18 | *TBD — game in progress at time of writing* | — |
 
-*Will be appended after each WCF game with the actual result, how it
-tracked vs the regular-season expectation, and any updates to the
-headline numbers.*
+*Filled in after each game.*
