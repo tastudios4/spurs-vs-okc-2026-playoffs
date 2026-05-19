@@ -17,6 +17,7 @@ from pathlib import Path
 import pandas as pd
 from nba_api.stats.endpoints import leaguegamefinder, playergamelogs
 from nba_api.stats.static import players, teams
+from tabulate import tabulate
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -261,19 +262,74 @@ if __name__ == "__main__":
     h2h_game_ids = set(reg["GAME_ID"].astype(str))
     _, h2h_box, season_avg = fetch_player_data(h2h_game_ids)
 
-    # Friendly summary to stdout.
-    print("\nRegular season head-to-head summary:")
-    pretty = (
-        reg[["GAME_DATE", "MATCHUP", "TEAM_ABBREVIATION", "WL", "PTS"]]
-        .sort_values(["GAME_DATE", "TEAM_ABBREVIATION"])
-        .to_string(index=False)
+    # ----- Friendly summaries to stdout. CSVs keep full precision. -----
+
+    def _print_titled(title: str, body: str) -> None:
+        # psql table borders (top + bottom) frame the body — no extra outer
+        # dashes needed.
+        print(f"\n{title}")
+        print(body)
+
+    # Tabulate format: "psql" gives full outer borders + vertical column
+    # separators + header underline (no row-by-row separators).
+    TFMT = "psql"
+
+    # Team H2H: one row per game with both scores, margin, and winner.
+    sas = reg[reg.TEAM_ABBREVIATION == "SAS"][["GAME_ID", "GAME_DATE", "MATCHUP", "PTS"]].rename(columns={"PTS": "SAS"})
+    okc = reg[reg.TEAM_ABBREVIATION == "OKC"][["GAME_ID", "PTS"]].rename(columns={"PTS": "OKC"})
+    summary = sas.merge(okc, on="GAME_ID").sort_values("GAME_DATE")
+    summary["MARGIN"] = (summary["SAS"] - summary["OKC"]).map(lambda x: f"{x:+d}")
+    summary["WINNER"] = summary.apply(lambda r: "SAS" if r["SAS"] > r["OKC"] else "OKC", axis=1)
+    summary = summary[["GAME_DATE", "MATCHUP", "SAS", "OKC", "WINNER", "MARGIN"]]
+    _print_titled(
+        "Regular season head-to-head summary (n=5):",
+        tabulate(summary, headers="keys", tablefmt=TFMT, showindex=False,
+                 disable_numparse=True,
+                 colalign=("left", "left", "right", "right", "center", "right")),
     )
-    print(pretty)
 
-    print("\nPlayer H2H box (key cols):")
-    cols = ["GAME_DATE", "PLAYER_LABEL", "MIN", "PTS", "REB", "AST", "USG_PCT", "TS_PCT"]
-    print(h2h_box[cols].to_string(index=False))
+    # Player H2H: clean date, 1-decimal minutes, percent-formatted rates.
+    # Grouped by game with a separator between games for readability.
+    ph = h2h_box[["GAME_DATE", "PLAYER_LABEL", "MIN", "PTS", "REB", "AST", "USG_PCT", "TS_PCT"]].copy()
+    ph["GAME_DATE"] = pd.to_datetime(ph["GAME_DATE"]).dt.strftime("%Y-%m-%d")
+    ph = ph.sort_values(["GAME_DATE", "PLAYER_LABEL"]).reset_index(drop=True)
+    # Pre-format columns that need % or fixed-decimal formatting.
+    ph_display = ph.copy()
+    ph_display["MIN"] = ph_display["MIN"].map("{:.1f}".format)
+    ph_display["USG_PCT"] = ph_display["USG_PCT"].map("{:.1%}".format)
+    ph_display["TS_PCT"] = ph_display["TS_PCT"].map("{:.1%}".format)
+    ph_table = tabulate(
+        ph_display, headers="keys", tablefmt=TFMT, showindex=False,
+        disable_numparse=True,
+        colalign=("left", "left", "right", "right", "right", "right", "right", "right"),
+    )
+    # Inject the header-separator line between game groups.
+    # psql layout: [top_border, header_row, header_sep, ...data_rows..., bottom_border]
+    lines = ph_table.split("\n")
+    top_border, header_row, header_sep = lines[0], lines[1], lines[2]
+    *data_lines, bottom_border = lines[3:]
+    grouped = [top_border, header_row, header_sep]
+    prev_date = None
+    for line, date in zip(data_lines, ph["GAME_DATE"]):
+        if prev_date is not None and date != prev_date:
+            grouped.append(header_sep)
+        grouped.append(line)
+        prev_date = date
+    grouped.append(bottom_border)
+    _print_titled("Player H2H box (key cols):", "\n".join(grouped))
 
-    print("\nPlayer season averages (key cols):")
-    cols = ["PLAYER_LABEL", "TEAM_LABEL", "GAMES_PLAYED", "MIN", "PTS", "REB", "AST", "USG_PCT", "TS_PCT"]
-    print(season_avg[cols].to_string(index=False))
+    # Player season averages: 1-decimal stats, percent-formatted rates.
+    sa = season_avg[["PLAYER_LABEL", "TEAM_LABEL", "GAMES_PLAYED",
+                     "MIN", "PTS", "REB", "AST", "USG_PCT", "TS_PCT"]].copy()
+    sa_display = sa.copy()
+    sa_display["GAMES_PLAYED"] = sa_display["GAMES_PLAYED"].map("{:.0f}".format)
+    for col in ("MIN", "PTS", "REB", "AST"):
+        sa_display[col] = sa_display[col].map("{:.1f}".format)
+    for col in ("USG_PCT", "TS_PCT"):
+        sa_display[col] = sa_display[col].map("{:.1%}".format)
+    _print_titled(
+        "Player season averages (key cols):",
+        tabulate(sa_display, headers="keys", tablefmt=TFMT, showindex=False,
+                 disable_numparse=True,
+                 colalign=("left", "left", "right", "right", "right", "right", "right", "right", "right")),
+    )
