@@ -131,11 +131,17 @@ def add_player_context(player: pd.DataFrame, team_clean: pd.DataFrame) -> pd.Dat
     player = player.copy()
     player["GAME_DATE"] = pd.to_datetime(player["GAME_DATE"]).dt.strftime("%Y-%m-%d")
 
+    # `player` already carries SEASON_TYPE from the PlayerGameLogs fetch;
+    # don't pull it from team_clean too or pandas will produce SEASON_TYPE_x /
+    # SEASON_TYPE_y suffixes.
     flags = team_clean.drop_duplicates(subset=["GAME_ID"])[[
-        "GAME_ID", "SEASON_TYPE", "wemby_status", "sga_played",
+        "GAME_ID", "wemby_status", "sga_played",
         "is_cup_knockout", "is_neutral_site", "is_blowout",
     ]]
-    return player.merge(flags, on="GAME_ID")
+    out = player.merge(flags, on="GAME_ID")
+    if "SEASON_TYPE" not in out.columns:
+        out["SEASON_TYPE"] = "Regular Season"
+    return out
 
 
 # ---------------------------------------------------------------------------
