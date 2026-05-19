@@ -2,10 +2,9 @@
 
 A standalone context document for this project — useful as:
 
-- A self-contained prompt to paste into a new Claude/ChatGPT conversation
-  when you want help articulating the project (resume bullets, interview
-  prep, README critique, mock interviews)
-- A handoff doc for anyone reviewing the work
+- A self-contained briefing for recruiters, hiring managers, or anyone
+  reviewing the work
+- Source material for resume bullets and interview talking points
 - A reference for myself to remember the analytical and engineering
   decisions I made
 
@@ -114,12 +113,10 @@ expect in the WCF — and which patterns are predictive vs noise?
 
 ## How to use this doc
 
-When starting a new Claude / ChatGPT conversation about this project,
-paste the entire file above the cut and add a specific ask, e.g.:
+Share it with anyone who needs project context quickly — a recruiter, a
+hiring manager, a reference, an interviewer. It's designed to stand on
+its own without requiring the reader to clone the repo or read the code.
 
-> **What I want help with:**
-> - Write 3-4 resume bullet points for this project
-> - Help me prepare talking points for a 10-minute sports analytics interview
-> - Critique how I'm presenting the findings in the README
-> - Suggest one chart that would make the strongest single visual artifact
-> - Mock-interview me on this project as if you were a hiring manager
+For my own use, this is also the doc I work from when drafting resume
+bullets, interview talking points, or portfolio-page copy — everything
+the resume cites is sourced from claims here.
